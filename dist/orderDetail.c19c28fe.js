@@ -150,6 +150,14 @@ var _core = require("@xatom/core");
 var _auth = require("../auth");
 var _supbase = require("../supbase");
 var _supbaseDefault = parcelHelpers.interopDefault(_supbase);
+// Check if Supabase client is available
+const checkSupabaseAccess = ()=>{
+    if (!(0, _supbaseDefault.default)) {
+        console.error("Access denied: Not on allowed domain");
+        return false;
+    }
+    return true;
+};
 const renderLogoutBtn = ()=>{
     const btn = new (0, _core.WFComponent)(`[xa-type=cta-btn]`);
     btn.on("click", (e)=>{
@@ -160,6 +168,7 @@ const renderLogoutBtn = ()=>{
     btn.setTextContent("Logga ut");
 };
 const renderHistory = async ()=>{
+    if (!checkSupabaseAccess()) return;
     const historyContainer = new (0, _core.WFDynamicList)("[xa-type='history-list']", {
         rowSelector: "[xa-type='history-item']",
         emptySelector: "[xa-type='no-previous-order']"
@@ -196,6 +205,7 @@ const renderHistory = async ()=>{
     }
 };
 const fetchLatestIncompleteOrder = async (userId)=>{
+    if (!checkSupabaseAccess()) return null;
     try {
         const { data: order, error } = await (0, _supbaseDefault.default).from("Order").select("*").eq("user_id", userId).eq("is_complete", false).order("order_date", {
             ascending: false
@@ -212,8 +222,9 @@ const fetchLatestIncompleteOrder = async (userId)=>{
     }
 };
 const fetchOrderStatus = async (orderId)=>{
+    if (!checkSupabaseAccess()) return null;
     try {
-        const { data: statusData, error: statusError } = await (0, _supbaseDefault.default).from("order_status").select("*").eq("order_id", orderId).order("created_at", {
+        const { data: statusData, error: statusError } = await (0, _supbaseDefault.default).from("order_status").select("*").eq("order_id", orderId).eq("user_id", (0, _auth.userAuth).getUser().id).order("created_at", {
             ascending: false
         }).limit(1).single();
         if (statusError) {
@@ -228,6 +239,11 @@ const fetchOrderStatus = async (orderId)=>{
     }
 };
 const orderDetails = async ()=>{
+    if (!checkSupabaseAccess()) {
+        const orderDetailsContainer = new (0, _core.WFComponent)(`[xa-type="order-details"]`);
+        orderDetailsContainer.setHTML("<p>Access denied: Not on allowed domain.</p>");
+        return;
+    }
     renderLogoutBtn();
     renderHistory(); // Call to render history of completed orders
     const userId = (0, _auth.userAuth).getUser().id;
@@ -244,7 +260,9 @@ const orderDetails = async ()=>{
         varderingsnummer: "[xa-type=varderingsnummer]",
         summa: "[xa-type=summa]",
         angeratt: "[xa-type=angerr\xe4tt]",
-        totalgrampurchased: "[xa-type=totalgrampurchased]"
+        totalgrampurchased: "[xa-type=totalgrampurchased]",
+        utbetalningsdatum: "[xa-type=utbetalningsdatum]",
+        utbetalningsdatum_last: "[xa-type=utbetalningsdatum-last]"
     });
     if (components.bestallning && components.datum && components.varderingsnummer && components.summa && components.angeratt && components.totalgrampurchased && components.kvittolink) {
         components.bestallning.setTextContent(order.barcodeid.toFixed(0));
@@ -254,6 +272,8 @@ const orderDetails = async ()=>{
         components.angeratt.setTextContent(order.cancellation_right_period);
         components.totalgrampurchased.setTextContent(order.total_gram_purchased || "0.00");
         components.kvittolink.setAttribute("href", order.recipe_download_link);
+        if (components.utbetalningsdatum) components.utbetalningsdatum.setTextContent(order.utbetalningsdatum || "Inte tillg\xe4ngligt");
+        if (components.utbetalningsdatum_last) components.utbetalningsdatum_last.setTextContent(order.utbetalningsdatum_last || "Inte tillg\xe4ngligt");
     } else {
         console.error("One or more components not found in order details container", components);
         return;

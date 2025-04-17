@@ -146,7 +146,7 @@
 var parcelHelpers = require("@parcel/transformer-js/src/esmodule-helpers.js");
 parcelHelpers.defineInteropFlag(exports);
 parcelHelpers.export(exports, "orderDetails", ()=>orderDetails);
-var _core = require("@xatom/core");
+var _core = require("@xatom/core"); // Added navigate
 var _auth = require("../auth");
 var _supbase = require("../supbase");
 var _supbaseDefault = parcelHelpers.interopDefault(_supbase);
@@ -158,37 +158,73 @@ const checkSupabaseAccess = ()=>{
     }
     return true;
 };
-const renderLogoutBtn = ()=>{
-    const btn = new (0, _core.WFComponent)(`[xa-type=cta-btn]`);
-    btn.on("click", (e)=>{
-        e.preventDefault();
-        btn.setTextContent("Please wait...");
-        (0, _auth.logout)();
-    });
-    btn.setTextContent("Logga ut");
-};
-const renderHistory = async ()=>{
+// --- The renderHistory Function ---
+/**
+ * Fetches completed orders for the current user from Supabase
+ * and renders them into the designated history list element on the page.
+ */ const renderHistory = async ()=>{
     if (!checkSupabaseAccess()) return;
     const historyContainer = new (0, _core.WFDynamicList)("[xa-type='history-list']", {
         rowSelector: "[xa-type='history-item']",
         emptySelector: "[xa-type='no-previous-order']"
     });
+    // Replace the existing rowRenderer block with this one:
     historyContainer.rowRenderer(({ rowData, rowElement })=>{
-        if (!rowData || !rowElement) {
-            console.error("Row data or element is missing", rowData, rowElement);
-            return rowElement; // Return the row element to maintain the structure
+        // Basic validation
+        if (!rowData) {
+            console.warn("History rowRenderer: Received null rowData.");
+            return rowElement;
         }
-        console.log("Rendering row with data", rowData);
-        const vardNrComponent = rowElement.getChildAsComponent("[xa-type='history-vard-nr']");
-        const beloppComponent = rowElement.getChildAsComponent("[xa-type='history-belopp']");
-        if (vardNrComponent && beloppComponent) {
-            vardNrComponent.setTextContent(rowData.valuation_number || "N/A");
-            // Convert amount to number if it's a string, and then apply toFixed
+        if (!rowElement) {
+            console.warn("History rowRenderer: Received null rowElement for data:", rowData);
+            return rowElement;
+        }
+        console.log(`History: Rendering item for Order ID ${rowData.id ?? "N/A"}`);
+        // Helper to safely get child components
+        const getChildSafely = (selector)=>{
+            try {
+                const comp = rowElement.getChildAsComponent(selector);
+                // Add an extra check here - sometimes getChildAsComponent might not throw but return null
+                if (!comp) {
+                    console.warn(`History Row ${rowData.id}: Child '${selector}' not found (returned null).`);
+                    return null;
+                }
+                return comp;
+            } catch (e) {
+                console.warn(`History Row ${rowData.id}: Child '${selector}' error:`, e.message);
+                return null;
+            }
+        };
+        // Get all required components
+        const vardNrComponent = getChildSafely("[xa-type='history-vard-nr']");
+        const beloppComponent = getChildSafely("[xa-type='history-belopp']");
+        // *** ADDED: Get the PDF link component ***
+        const pdfLinkComponent = getChildSafely("[xa-type='pdf-link-history']");
+        // Populate found components
+        if (vardNrComponent) vardNrComponent.setTextContent(rowData.valuation_number || "N/A");
+        if (beloppComponent) {
+            // Using the simple formatting from your base code
             const amount = typeof rowData.amount === "string" ? parseFloat(rowData.amount) : rowData.amount;
-            const amountText = amount != null && !isNaN(amount) ? amount.toFixed(2) + " SEK" : "0.00 SEK";
+            const amountText = amount != null && !isNaN(amount) ? amount.toFixed(2) + " kr" : "0.00 kr"; // Added kr suffix
             beloppComponent.setTextContent(amountText);
-        } else console.error("One or more components not found in row element", vardNrComponent, beloppComponent);
-        return rowElement;
+        }
+        // *** ADDED: Populate the PDF link href ***
+        if (pdfLinkComponent) {
+            const link = rowData.recipe_download_link; // Get link from data
+            console.log(`  -> Setting PDF link for ${rowData.id}: ${link || "#"}`);
+            pdfLinkComponent.setAttribute("href", link || "#"); // Set href, fallback to '#'
+            // Make valid links open in a new tab for better UX
+            if (link && link !== "#") {
+                pdfLinkComponent.setAttribute("target", "_blank");
+                pdfLinkComponent.setAttribute("rel", "noopener noreferrer"); // Security best practice
+            } else {
+                // Remove target if link is invalid/missing
+                pdfLinkComponent.removeAttribute("target");
+                pdfLinkComponent.removeAttribute("rel");
+            }
+        } else // Add warning if PDF link specifically wasn't found
+        console.warn(`History Row ${rowData.id}: Component '[xa-type="pdf-link-history"]' not found in HTML template.`);
+        return rowElement; // Return the modified element
     });
     try {
         const { data: historyData, error } = await (0, _supbaseDefault.default).from("Order").select("*").eq("user_id", (0, _auth.userAuth).getUser().id).eq("is_complete", true).order("order_date", {
@@ -204,108 +240,244 @@ const renderHistory = async ()=>{
         console.error("Failed to fetch or render order history:", error);
     }
 };
-const fetchLatestIncompleteOrder = async (userId)=>{
-    if (!checkSupabaseAccess()) return null;
+// --- Helper Function (Date/Time Formatting - Still Needed) ---
+const formatDate = (dateValue)=>{
+    if (!dateValue) return "Inte tillg\xe4ngligt";
     try {
-        const { data: order, error } = await (0, _supbaseDefault.default).from("Order").select("*").eq("user_id", userId).eq("is_complete", false).order("order_date", {
-            ascending: false
-        }).limit(1).single();
-        if (error || !order) {
-            console.error("Error fetching latest incomplete order or no such order exists", error);
-            return null;
-        }
-        console.log("Fetched latest incomplete order", order);
-        return order;
-    } catch (error) {
-        console.error("Error fetching latest incomplete order:", error);
-        return null;
+        const date = new Date(dateValue);
+        if (isNaN(date.getTime())) return "Ogiltigt datum";
+        return `${date.getDate().toString().padStart(2, "0")}.${(date.getMonth() + 1).toString().padStart(2, "0")}.${date.getFullYear()}`;
+    } catch (e) {
+        console.error("Error formatting date:", dateValue, e);
+        return "Datumfel";
     }
 };
-const fetchOrderStatus = async (orderId)=>{
-    if (!checkSupabaseAccess()) return null;
+const formatDateTime = (isoString)=>{
+    if (!isoString) return "N/A";
     try {
-        const { data: statusData, error: statusError } = await (0, _supbaseDefault.default).from("order_status").select("*").eq("order_id", orderId).eq("user_id", (0, _auth.userAuth).getUser().id).order("created_at", {
-            ascending: false
-        }).limit(1).single();
-        if (statusError) {
-            console.error("Error fetching order status:", statusError);
-            return null;
-        }
-        console.log("Fetched latest order status", statusData);
-        return statusData;
-    } catch (error) {
-        console.error("Error fetching order status:", error);
-        return null;
-    }
-};
-const orderDetails = async ()=>{
-    if (!checkSupabaseAccess()) {
-        const orderDetailsContainer = new (0, _core.WFComponent)(`[xa-type="order-details"]`);
-        orderDetailsContainer.setHTML("<p>Access denied: Not on allowed domain.</p>");
-        return;
-    }
-    renderLogoutBtn();
-    renderHistory(); // Call to render history of completed orders
-    const userId = (0, _auth.userAuth).getUser().id;
-    const orderDetailsContainer = new (0, _core.WFComponent)(`[xa-type="order-details"]`);
-    const order = await fetchLatestIncompleteOrder(userId);
-    if (!order) {
-        orderDetailsContainer.setHTML("<p>No active order found.</p>");
-        return;
-    }
-    const components = orderDetailsContainer.getManyChildAsComponents({
-        kvittolink: "[xa-type=pdf-link]",
-        bestallning: "[xa-type=bestallning]",
-        datum: "[xa-type=datum]",
-        varderingsnummer: "[xa-type=varderingsnummer]",
-        summa: "[xa-type=summa]",
-        angeratt: "[xa-type=angerr\xe4tt]",
-        totalgrampurchased: "[xa-type=totalgrampurchased]",
-        utbetalningsdatum: "[xa-type=utbetalningsdatum]",
-        utbetalningsdatum_last: "[xa-type=utbetalningsdatum-last]"
-    });
-    if (components.bestallning && components.datum && components.varderingsnummer && components.summa && components.angeratt && components.totalgrampurchased && components.kvittolink) {
-        components.bestallning.setTextContent(order.barcodeid.toFixed(0));
-        components.datum.setTextContent(order.order_date);
-        components.varderingsnummer.setTextContent(order.valuation_number);
-        components.summa.setTextContent(order.amount || "0.00");
-        components.angeratt.setTextContent(order.cancellation_right_period);
-        components.totalgrampurchased.setTextContent(order.total_gram_purchased || "0.00");
-        components.kvittolink.setAttribute("href", order.recipe_download_link);
-        if (components.utbetalningsdatum) components.utbetalningsdatum.setTextContent(order.utbetalningsdatum || "Inte tillg\xe4ngligt");
-        if (components.utbetalningsdatum_last) components.utbetalningsdatum_last.setTextContent(order.utbetalningsdatum_last || "Inte tillg\xe4ngligt");
-    } else {
-        console.error("One or more components not found in order details container", components);
-        return;
-    }
-    const statusData = await fetchOrderStatus(order.id);
-    if (!statusData) return;
-    const formatDateTime = (isoString)=>{
         const date = new Date(isoString);
+        if (isNaN(date.getTime())) return "Ogiltigt datum";
         const day = date.getDate().toString().padStart(2, "0");
         const month = (date.getMonth() + 1).toString().padStart(2, "0");
         const year = date.getFullYear();
         const hours = date.getHours().toString().padStart(2, "0");
         const minutes = date.getMinutes().toString().padStart(2, "0");
         return `${day}.${month}.${year} ${hours}:${minutes}`;
-    };
-    const step = statusData.step || 1;
-    const substep = statusData.substep || 1;
-    const kuvertMottagen = statusData.kuvert_mottagen ? formatDateTime(statusData.kuvert_mottagen) : "Not available";
-    const stepElement = new (0, _core.WFComponent)(`[xa-type="step"]`);
-    const substepElement = new (0, _core.WFComponent)(`[xa-type="substep"]`);
-    const kuvertMottagenElement = new (0, _core.WFComponent)(`[xa-type="kuvertmottagen"]`);
-    if (stepElement && substepElement && kuvertMottagenElement) {
-        stepElement.setTextContent(`${step}`);
-        substepElement.setTextContent(`${substep}`);
-        kuvertMottagenElement.setTextContent(kuvertMottagen);
-    } else console.error("One or more step-related components not found", {
-        stepElement,
-        substepElement,
-        kuvertMottagenElement
-    });
+    } catch (e) {
+        console.error("Error formatting date/time:", isoString, e);
+        return "Datum/tid-fel";
+    }
 };
-orderDetails();
+// --- Reworked Data Fetching Functions ---
+const fetchLatestIncompleteOrder = async (userId)=>{
+    // Using maybeSingle from previous good version
+    if (!checkSupabaseAccess()) return null;
+    console.log("Fetching latest incomplete order for user:", userId);
+    try {
+        const { data: order, error } = await (0, _supbaseDefault.default).from("Order").select("*") // Fetches all columns, including new ones
+        .eq("user_id", userId).eq("is_complete", false).order("order_date", {
+            ascending: false
+        }).limit(1).maybeSingle();
+        if (error) console.error("Error fetching latest incomplete order:", error);
+        if (!order) console.log("No active incomplete order found.");
+        else console.log("Fetched latest incomplete order:", order);
+        return order ? order : null;
+    } catch (error) {
+        console.error("Exception fetching latest incomplete order:", error);
+        return null;
+    }
+};
+const fetchOrderStatus = async (orderId)=>{
+    // Using maybeSingle from previous good version
+    if (!checkSupabaseAccess() || !orderId) return null;
+    console.log("Fetching status for order ID:", orderId);
+    try {
+        const { data: statusData, error: statusError } = await (0, _supbaseDefault.default).from("order_status").select("*").eq("order_id", orderId)// Remove user_id check unless order_id is not unique across users in status table
+        // .eq("user_id", userAuth.getUser().id)
+        .order("created_at", {
+            ascending: false
+        }).limit(1).maybeSingle();
+        if (statusError) console.error("Error fetching order status:", statusError);
+        if (!statusData) console.log("No status found for order ID:", orderId);
+        else console.log("Fetched latest order status:", statusData);
+        return statusData ? statusData : null;
+    } catch (error) {
+        console.error("Exception fetching order status:", error);
+        return null;
+    }
+};
+const orderDetails = async ()=>{
+    // Initial checks
+    if (!checkSupabaseAccess()) return;
+    let orderDetailsContainerComp = null;
+    try {
+        orderDetailsContainerComp = new (0, _core.WFComponent)(`[xa-type="order-details"]`);
+        if (!orderDetailsContainerComp) throw new Error("Container component is null.");
+    } catch (error) {
+        console.error("CRITICAL: Could not find container '[xa-type=\"order-details\"]'.", error.message);
+        return; // Stop
+    }
+    console.log("Main container found.");
+    // Assume renderLogoutBtn() and renderHistory() are called elsewhere or before this
+    const userId = (0, _auth.userAuth).getUser()?.id;
+    if (!userId) {
+        orderDetailsContainerComp.setHTML("<p>V\xe4nligen <a href='/auth/sign-in'>logga in</a>.</p>");
+        orderDetailsContainerComp.getChildAsComponent(".current-order-wrapper")?.setStyle({
+            display: "none"
+        });
+        // Optionally hide history too if it wasn't handled in renderHistory
+        // orderDetailsContainerComp.getChildAsComponent("[xa-type='history-list']")?.setStyle({ display: 'none' });
+        // orderDetailsContainerComp.getChildAsComponent(".history-heading")?.setStyle({ display: 'none' });
+        return;
+    }
+    // Fetch active order
+    const order = await fetchLatestIncompleteOrder(userId);
+    // Get display elements (using component methods is safer)
+    const noOrderElement = orderDetailsContainerComp.getChildAsComponent(`[xa-type="no-active-order"]`);
+    const currentOrderWrapper = orderDetailsContainerComp.getChildAsComponent(".current-order-wrapper");
+    // --- Handle No Active Order ---
+    if (!order) {
+        console.log("Displaying 'No active order' state.");
+        if (currentOrderWrapper) currentOrderWrapper.setStyle({
+            display: "none"
+        });
+        else console.warn("'.current-order-wrapper' element not found to hide.");
+        if (noOrderElement) noOrderElement.setStyle({
+            display: "block"
+        });
+        else {
+            console.warn("Element '[xa-type=\"no-active-order\"]' not found. Adding fallback message.");
+            // Use standard DOM API if component method isn't suitable
+            const containerElem = document.querySelector('[xa-type="order-details"]');
+            if (containerElem && !containerElem.querySelector(".fallback-no-order")) containerElem.insertAdjacentHTML("afterbegin", '<p class="fallback-no-order">Du har ingen aktiv f\xf6rs\xe4ljning just nu.</p>');
+        }
+        return; // Stop execution
+    }
+    // --- Handle Active Order Found ---
+    console.log(`Active order found: ID=${order.id}. Displaying details...`);
+    if (noOrderElement) noOrderElement.setStyle({
+        display: "none"
+    });
+    if (currentOrderWrapper) currentOrderWrapper.setStyle({
+        display: "block"
+    }); // Or 'flex', 'grid' etc.
+    else console.warn("'.current-order-wrapper' element not found to show.");
+    // Remove any fallback message
+    document.querySelector('[xa-type="order-details"] .fallback-no-order')?.remove();
+    // --- Populate Order Details ---
+    console.log("Populating active order details fields...");
+    // Helper to safely get and populate (No formatCurrency/formatGrams)
+    const getAndPopulate = (selector, value, formatter, attribute)=>{
+        console.log(`  -> Populating ${selector}...`);
+        let component = null;
+        try {
+            // Try getting the component instance
+            component = orderDetailsContainerComp.getChildAsComponent(selector);
+            if (!component) {
+                console.warn(`    Component '${selector}' not found in HTML.`);
+                return; // Skip if component not found
+            }
+            // Format value if formatter provided, otherwise use toString or default
+            const formattedValue = formatter ? formatter(value) : value?.toString() ?? ""; // Basic formatting
+            console.log(`    Setting value for ${selector}: ${formattedValue}`);
+            // Set attribute or text content
+            if (attribute === "href") {
+                component.setAttribute(attribute, formattedValue || "#");
+                if (value && value !== "#") component.setAttribute("target", "_blank");
+                else component.removeAttribute("target");
+            } else component.setTextContent(formattedValue);
+        } catch (e) {
+            // Catch errors during getChild or population
+            console.warn(`    Error processing component '${selector}':`, e.message);
+            if (e.message?.includes("Could not find")) console.warn(`    ^^^ Element for selector '${selector}' likely MISSING in HTML.`);
+        }
+    };
+    // Populate fields based on your list and interface
+    // Using basic .toString() or specific formatters where needed (like dates)
+    getAndPopulate("[xa-type=datum]", order.order_date, formatDate);
+    getAndPopulate("[xa-type=varderingsnummer]", order.valuation_number || "P\xe5g\xe5ende");
+    // Map specific gold grams field to the 'totalgrampurchased' element
+    getAndPopulate("[xa-type=totalgrampurchased]", order.total_guldgram_kopt?.toString() ?? "0.00");
+    getAndPopulate("[xa-type=totolsilverkopt]", order.total_silver_kopt?.toString() ?? "0.00");
+    // Ensure correct column name casing from DB ("Total_ej_adelmetall" or "total_ej_adelmetall")
+    getAndPopulate("[xa-type=totalejadelmetall]", order.total_ej_adelmetall?.toString() ?? "0.00");
+    getAndPopulate("[xa-type=totalsilverpris]", order.total_silver_pris?.toString() ?? "0.00 kr"); // Add suffix manually if needed
+    getAndPopulate("[xa-type=summa]", order.amount?.toString() ?? "0.00 kr"); // Total amount, add suffix manually
+    getAndPopulate("[xa-type=utbetalningsdatum]", order.utbetalningsdatum, formatDate);
+    getAndPopulate("[xa-type=utbetalningsdatum-last]", order.utbetalningsdatum_last, formatDate);
+    getAndPopulate("[xa-type=pdf-link]", order.recipe_download_link, (v)=>v, "href");
+    // Note: xa-type="totalgoldvalue" is NOT populated as the field wasn't in the interface/schema.
+    // Other fields like barcodeid, order_id, cancellation_right_period are also not populated.
+    // --- Fetch and Populate Status ---
+    console.log("Fetching order status...");
+    const statusData = await fetchOrderStatus(order.id.toString()); // Use active order ID
+    const step = statusData?.step ?? 1;
+    const substep = statusData?.substep ?? 1;
+    const kuvertMottagen = formatDateTime(statusData?.kuvert_mottagen ?? null); // Keep date formatting
+    console.log(`Status values: Step=${step}, Substep=${substep}`);
+    // Helper for safe status component fetching
+    // Helper for safe status component fetching
+    const getStatusComponent = (selector)=>{
+        let component = null; // Initialize as null
+        try {
+            // Attempt to get the component
+            component = orderDetailsContainerComp.getChildAsComponent(selector); // Use ! assertion as container component should exist here
+            // Check if the component was successfully found (WFComponent might return null/undefined if selector doesn't match, though often it throws)
+            if (!component) {
+                console.warn(`Status component '${selector}' not found (returned null/undefined).`);
+                return null; // Explicitly return null if not found
+            }
+            // If we got here and didn't throw, component should be valid
+            return component;
+        } catch (e) {
+            // Catch errors if getChildAsComponent throws (e.g., selector invalid, "Could not find null")
+            console.warn(`Status component '${selector}' could not be retrieved:`, e.message);
+            return null; // Explicitly return null on error
+        }
+    // Note: This line should now be unreachable, but ensures TS is happy if needed.
+    // return null;
+    };
+    // REQUIRED HTML: Hidden elements xa-type="step", xa-type="substep" id="substepping"
+    const stepElement = getStatusComponent(`[xa-type="step"]`);
+    const substepElement = getStatusComponent(`[xa-type="substep"]`);
+    // REQUIRED HTML: Visible element xa-type="kuvertmottagen"
+    const kuvertMottagenElement = getStatusComponent(`[xa-type="kuvertmottagen"]`);
+    // Populate status elements
+    if (stepElement) stepElement.setTextContent(`${step}`);
+    else console.warn("REQUIRED HTML MISSING: '[xa-type=\"step\"]'.");
+    if (substepElement) {
+        substepElement.setTextContent(`${substep}`);
+        // Update element for embedded script
+        const substeppingFieldForScript = document.getElementById("substepping");
+        if (substeppingFieldForScript) {
+            if (substeppingFieldForScript.textContent !== `${substep}`) {
+                substeppingFieldForScript.textContent = `${substep}`;
+                // Trigger embedded script update
+                if (typeof window.updateSubstepAndProgress === "function") {
+                    console.log("Triggering embedded updateSubstepAndProgress()...");
+                    try {
+                        window.updateSubstepAndProgress();
+                    } catch (embedError) {
+                        console.error("Error calling embedded script:", embedError);
+                    }
+                } else console.warn("window.updateSubstepAndProgress not found.");
+            }
+        } else console.warn("REQUIRED HTML MISSING: Element with id='substepping'.");
+    } else console.warn("REQUIRED HTML MISSING: '[xa-type=\"substep\"]'.");
+    if (kuvertMottagenElement) kuvertMottagenElement.setTextContent(kuvertMottagen);
+    else console.warn("Component '[xa-type=kuvertmottagen]' not found.");
+    console.log("Order details processing complete.");
+};
+// Initialization logic remains the same
+const initOrderDetails = ()=>{
+    const container = document.querySelector('[xa-type="order-details"]');
+    if (container) {
+        console.log("Initializing order details...");
+        orderDetails();
+    }
+};
+renderHistory();
+initOrderDetails();
 
 },{"@xatom/core":"8w4K8","../auth":"du3Bh","../supbase":"anyOU","@parcel/transformer-js/src/esmodule-helpers.js":"5oERU"}]},[], null, "parcelRequire89a0")
 
